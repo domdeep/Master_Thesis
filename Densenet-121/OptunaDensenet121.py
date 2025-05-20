@@ -1,5 +1,4 @@
 # densenet121 with optuna hyperparameter tuning
-
 import os
 import random
 import numpy as np
@@ -241,7 +240,7 @@ def objective(trial, train_loader, val_loader, num_classes, fixed_class_weights,
         logger=trial_logger,
         enable_progress_bar=True,
         precision="16-mixed",
-        callbacks=[EarlyStopping(monitor="val_loss", patience=3), checkpoint_callback, pruning_callback]
+        callbacks=[EarlyStopping(monitor="val_f1", patience=3), checkpoint_callback, pruning_callback]
     )
 
     trainer.fit(model, trial_train_loader, trial_val_loader)
