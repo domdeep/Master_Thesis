@@ -21,6 +21,8 @@ import optuna
 import joblib
 from optuna.exceptions import TrialPruned
 import time
+from optuna.integration import PyTorchLightningPruningCallback
+
 
 # reproducibility setup
 torch.set_float32_matmul_precision('medium')
@@ -181,7 +183,6 @@ class ConvNeXtTinyLightning(pl.LightningModule):
 
 
 # optuna hyperparameter tuning
-from optuna.integration import PyTorchLightningPruningCallback
 def objective(trial, train_loader, val_loader, num_classes, fixed_class_weights, output_dir):
     lr = trial.suggest_float("learning_rate", 1e-5, 5e-4, log=True)
     fc_layers = trial.suggest_int('fc_layers', 1, 3)
