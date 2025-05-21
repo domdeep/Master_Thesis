@@ -1,13 +1,11 @@
 import os, time, json, random, numpy as np
 from PIL import Image
 import joblib
-
 import torch
 from torch import nn, optim
 from torch.utils.data import Dataset, DataLoader
 from torchvision import transforms, models
 from sklearn.model_selection import StratifiedKFold
-
 import pytorch_lightning as pl
 from pytorch_lightning.loggers import CSVLogger
 from torchmetrics.classification import Accuracy, F1Score, Precision, Recall
@@ -17,13 +15,13 @@ from torch.nn.functional import softmax
 dataset_root = r"C:\Users\Xuxu\Desktop\CCMT Dataset"
 index_dir = r"C:\Users\Xuxu\Desktop\Master Thesis\OptunaDensenetFull"
 optuna_pkl = r"C:/Users/Xuxu/Desktop/Master Thesis/OptunaConvNeXtFull/new_convnext_study.pkl"
-save_dir = r"C:\Users\Xuxu\Desktop\Master Thesis\BYOLBaselineLabelEfficiencySeed42"
+save_dir = r"C:\Users\Xuxu\Desktop\Master Thesis\SupervisedBaselineLabelEfficiencySeed43"
 
 os.makedirs(save_dir, exist_ok=True)
 torch.set_float32_matmul_precision('medium')
 
 # reproducibility setup
-def set_seed(seed=42):
+def set_seed(seed=43):
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
@@ -33,7 +31,7 @@ def set_seed(seed=42):
         torch.cuda.manual_seed_all(seed)
 
 def worker_init_fn(worker_id):
-    seed = 42 + worker_id
+    seed = 43 + worker_id
     np.random.seed(seed)
     random.seed(seed)
 
@@ -45,7 +43,7 @@ training_transformations = transforms.Compose([
     transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
 ])
 
-# image transformations for validation (no augmentation)
+# image transformations for validation and testing (no augmentation)
 validation_test_transformations = transforms.Compose([
     transforms.Resize(256),
     transforms.CenterCrop(224),
@@ -71,24 +69,17 @@ class CustomImageDataset(Dataset):
 
 # model definition using convnext-tiny
 class ConvNextTinyLightning(pl.LightningModule):
-    def __init__(self, num_classes, class_weights, hparams, byol_ckpt_path=None):
+    def __init__(self, num_classes, class_weights, hparams):
         super().__init__()
-        self.save_hyperparameters()
-        self.hparams_dict = hparams
+        self.hparams_dict = hparams  # manual control over hyperparameters
         self.class_weights = class_weights
-        self.num_classes = num_classes
+        self.num_classes = num_classes  # store for reuse
+        self.metrics = None  # will initialize in setup()
 
-        self.model = models.convnext_tiny(weights=None)
+        # load pretrained convnext tiny weights
+        self.model = models.convnext_tiny(weights=models.ConvNeXt_Tiny_Weights.IMAGENET1K_V1)
 
-        # load byol pretrained weights
-        if byol_ckpt_path is not None and os.path.exists(byol_ckpt_path):
-            print(f"\n>> Loading BYOL pretrained weights from {byol_ckpt_path}")
-            state_dict = torch.load(byol_ckpt_path, map_location="cpu")
-            self.model.features.load_state_dict(state_dict, strict=False)
-        else:
-            raise FileNotFoundError(f"BYOL checkpoint not found at {byol_ckpt_path}")
-
-        # unfreeze encoder for fine-tuning
+        # unfreeze feature extractor layers for fine-tuning
         for param in self.model.features.parameters():
             param.requires_grad = True
 
@@ -174,7 +165,7 @@ class ConvNextTinyLightning(pl.LightningModule):
 
 # training and evaluation pipeline
 def main():
-    set_seed(42)
+    set_seed(43)  
     start_time = time.time()
 
     # load best hyperparameters from optuna
@@ -183,13 +174,12 @@ def main():
     best_hparams["lr"] = best_hparams.pop("learning_rate")
     print("Best Hyperparameters:", best_hparams)
 
-    # load label to index mapping
+    # load class to index mapping and dataset splits
     with open(os.path.join(index_dir, "class_to_idx.json")) as f:
         class_to_idx = json.load(f)
 
-    # load dataset split indices
-    train_indices = np.load(os.path.join(index_dir, "train_indices.npy"))
-    val_indices = np.load(os.path.join(index_dir, "val_indices.npy"))
+    train_indices = np.load(os.path.join(index_dir, "train_indices_seed43.npy"))
+    val_indices = np.load(os.path.join(index_dir, "val_indices_seed43.npy"))
     test_indices = np.load(os.path.join(index_dir, "test_indices.npy"))
     class_weights = torch.load(os.path.join(index_dir, "class_weights.pt"))
 
@@ -205,7 +195,7 @@ def main():
                     labels.append(class_idx)
     labels = np.array(labels)
 
-    # combine training and validation for full training set
+    # combine train and val indices for training set
     combined_train_indices = np.concatenate([train_indices, val_indices])
 
     test_set = CustomImageDataset(
@@ -220,7 +210,7 @@ def main():
 
     for percent in label_percentages:
 
-        set_seed(42)  
+        set_seed(43)  
         
         num_samples = int(len(combined_train_indices) * (percent / 100))
         selected_indices = np.random.choice(combined_train_indices, num_samples, replace=False)
@@ -231,20 +221,18 @@ def main():
             transform=training_transformations
         )
         train_loader = DataLoader(train_set, batch_size=32, shuffle=True, num_workers=2, persistent_workers=True, worker_init_fn=worker_init_fn)
-        
-        # load pretrained encoder from byol
-        byol_ckpt_path = r"C:/Users/Xuxu/Desktop/Master Thesis/BYOLPretrainVer3/byol_encoder.pt"
-        model = ConvNextTinyLightning(len(class_to_idx), class_weights, best_hparams, byol_ckpt_path=byol_ckpt_path)
-    
+
+        model = ConvNextTinyLightning(len(class_to_idx), class_weights, best_hparams)
+
         log_name = f"label_efficiency_{percent}percent"
         log_version = "version_0"
-        version_dir = os.path.join(save_dir, log_name, log_version)
+        version_dir = os.path.join(SAVE_DIR, log_name, log_version)
         pred_dir = os.path.join(version_dir, "predictions")
 
         os.makedirs(pred_dir, exist_ok=True)
 
         logger = CSVLogger(
-            save_dir=save_dir,
+            save_dir=SAVE_DIR,
             name=log_name,
             version=log_version
         )
@@ -260,9 +248,11 @@ def main():
             log_every_n_steps=1
         )
 
+         # train and test
         trainer.fit(model, train_loader)
         trainer.test(model, dataloaders=test_loader, verbose=True)
 
+     # collect test predictions and metrics
         all_preds, all_targets, all_probs = [], [], []
         model.eval()
         model.freeze()
@@ -283,6 +273,7 @@ def main():
         with open(os.path.join(version_dir, "test_metrics.json"), "w") as f:
             json.dump(metrics_to_save, f, indent=2)
 
+        # save predictions, targets, and probabilities as numpy arrays
         np.save(os.path.join(version_dir, "all_preds.npy"), np.array(all_preds))
         np.save(os.path.join(version_dir, "all_targets.npy"), np.array(all_targets))
         np.save(os.path.join(version_dir, "all_probs.npy"), np.array(all_probs))
