@@ -1,4 +1,5 @@
 # densenet121 with optuna hyperparameter tuning
+
 import os
 import random
 import numpy as np
@@ -19,6 +20,8 @@ from pytorch_lightning.loggers import CSVLogger
 import optuna
 import joblib
 from optuna.exceptions import TrialPruned
+import time 
+from optuna.integration import PyTorchLightningPruningCallback
 
 # reproducibility setup
 torch.set_float32_matmul_precision('medium')
@@ -193,8 +196,6 @@ class DenseNet121Lightning(pl.LightningModule):
         return optimizer
 
 # optuna hyperparameter tuning
-from optuna.integration import PyTorchLightningPruningCallback
-
 def objective(trial, train_loader, val_loader, num_classes, fixed_class_weights, output_dir):
     lr = trial.suggest_float("learning_rate", 1e-5, 5e-4, log=True)
     fc_layers = trial.suggest_int('fc_layers', 1, 3)
@@ -249,7 +250,6 @@ def objective(trial, train_loader, val_loader, num_classes, fixed_class_weights,
     return val_f1.item() if val_f1 else float("-inf")
 
 # main function 
-import time 
 def main():
     set_seed(42)
 
