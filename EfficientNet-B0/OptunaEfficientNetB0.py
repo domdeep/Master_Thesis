@@ -1,5 +1,4 @@
 # effcientnetb0 with optuna hyperparameter tuning
-
 import os
 import random
 import numpy as np
@@ -257,7 +256,7 @@ def main():
         json.dump(class_distribution, f, indent=4)
     print("[INFO] Class distribution saved.")
 
-    # save/load class weights for reproducibility
+    # load class weights for reproducibility
     weights_path = os.path.join(split_path, "class_weights.pt")
     if os.path.exists(weights_path):
         class_weights = torch.load(weights_path)
@@ -294,7 +293,7 @@ def main():
     print(f"  Value: {trial.value}")
     print(f"  Params: {trial.params}")
 
-    # Save the study and best trial parameters
+    # save the study and best trial parameters
     joblib.dump(study, os.path.join(output_dir, "new_efficientnet_study.pkl"))
     with open(os.path.join(output_dir, "best_trial_params.json"), "w") as f:
         json.dump(study.best_trial.params, f, indent=4)
