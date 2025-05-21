@@ -19,6 +19,8 @@ import optuna
 import joblib
 from optuna.exceptions import TrialPruned
 from torchvision.models import EfficientNet_B0_Weights
+import time
+from optuna.integration import PyTorchLightningPruningCallback
 
 # reproducibility setup
 torch.set_float32_matmul_precision('medium')
@@ -177,8 +179,6 @@ class EfficientNetB0Lightning(pl.LightningModule):
         return optimizer
 
 # optuna hyperparameter tuning
-from optuna.integration import PyTorchLightningPruningCallback
-
 def objective(trial, train_loader, val_loader, num_classes, fixed_class_weights, output_dir):
     lr = trial.suggest_float("learning_rate", 1e-5, 5e-4, log=True)
     fc_layers = trial.suggest_int('fc_layers', 1, 3)
@@ -233,7 +233,6 @@ def objective(trial, train_loader, val_loader, num_classes, fixed_class_weights,
     return val_f1.item() if val_f1 else float("-inf")
 
 # main function 
-import time
 
 def main():
     set_seed(42)  
@@ -256,7 +255,7 @@ def main():
         json.dump(class_distribution, f, indent=4)
     print("[INFO] Class distribution saved.")
 
-    # load class weights for reproducibility
+    #load class weights for reproducibility
     weights_path = os.path.join(split_path, "class_weights.pt")
     if os.path.exists(weights_path):
         class_weights = torch.load(weights_path)
@@ -282,7 +281,6 @@ def main():
         lambda trial: objective(trial, train_loader, val_loader, num_classes, class_weights, output_dir),
         n_trials=15, show_progress_bar=True
     ) 
-
 
     print("Number of finished trials: ", len(study.trials))
     print("Number of pruned trials: ", len([t for t in study.trials if t.state == optuna.trial.TrialState.PRUNED]))
