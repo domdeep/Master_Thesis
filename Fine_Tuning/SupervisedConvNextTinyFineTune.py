@@ -15,7 +15,7 @@ from torch.nn.functional import softmax
 dataset_root = r"C:\Users\Xuxu\Desktop\CCMT Dataset"
 index_dir = r"C:\Users\Xuxu\Desktop\Master Thesis\OptunaDensenetFull"
 optuna_pkl = r"C:/Users/Xuxu/Desktop/Master Thesis/OptunaConvNeXtFull/new_convnext_study.pkl"
-save_dir = r"C:\Users\Xuxu\Desktop\Master Thesis\BYOLBaselineVer2Epoch100"
+save_dir = r"C:\Users\Xuxu\Desktop\Master Thesis\SupervisedBaselineVer2Epoch100"
 
 os.makedirs(save_dir, exist_ok=True)
 torch.set_float32_matmul_precision('medium')
@@ -43,8 +43,7 @@ training_transformations = transforms.Compose([
     transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
 ])
 
-# image transformations for validation (no augmentation)
-
+# image transformations for validation and testing (no augmentation)
 validation_test_transformations = transforms.Compose([
     transforms.Resize(256),
     transforms.CenterCrop(224),
@@ -70,27 +69,19 @@ class CustomImageDataset(Dataset):
 
 # model definition using convnext-tiny
 class ConvNextTinyLightning(pl.LightningModule):
-    def __init__(self, num_classes, class_weights, hparams, byol_ckpt_path=None):
+    def __init__(self, num_classes, class_weights, hparams):
         super().__init__()
-        self.save_hyperparameters()
-        self.hparams_dict = hparams
+        self.hparams_dict = hparams  # manual control over hyperparameters
         self.class_weights = class_weights
-        self.num_classes = num_classes
+        self.num_classes = num_classes  # store for reuse
+        self.metrics = None  # will initialize in setup()
 
-        self.model = models.convnext_tiny(weights=None)
+        # load pretrained convnext tiny weights
+        self.model = models.convnext_tiny(weights=models.ConvNeXt_Tiny_Weights.IMAGENET1K_V1)
 
-        # load byol pretrained weights
-        if byol_ckpt_path is not None and os.path.exists(byol_ckpt_path):
-            print(f"\n>> Loading BYOL pretrained weights from {byol_ckpt_path}")
-            state_dict = torch.load(byol_ckpt_path, map_location="cpu")
-            self.model.features.load_state_dict(state_dict, strict=False)
-        else:
-            raise FileNotFoundError(f"BYOL checkpoint not found at {byol_ckpt_path}")
-
-        # unfreeze encoder for fine-tuning
+        # unfreeze feature extractor layers for fine-tuning
         for param in self.model.features.parameters():
             param.requires_grad = True
-
 
         # build classifier head with configurable fc layers
         in_features = self.model.classifier[2].in_features
@@ -174,7 +165,7 @@ class ConvNextTinyLightning(pl.LightningModule):
 
 # training and evaluation pipeline
 def main():
-    set_seed(42)
+    set_seed(42)  
     start_time = time.time()
 
     # load best hyperparameters from optuna
@@ -183,11 +174,10 @@ def main():
     best_hparams["lr"] = best_hparams.pop("learning_rate")
     print("Best Hyperparameters:", best_hparams)
 
-    # load label to index mapping
+    # load class to index mapping and dataset splits
     with open(os.path.join(index_dir, "class_to_idx.json")) as f:
         class_to_idx = json.load(f)
 
-    # load dataset split indices
     train_indices = np.load(os.path.join(index_dir, "train_indices.npy"))
     val_indices = np.load(os.path.join(index_dir, "val_indices.npy"))
     test_indices = np.load(os.path.join(index_dir, "test_indices.npy"))
@@ -205,12 +195,10 @@ def main():
                     labels.append(class_idx)
     labels = np.array(labels)
 
-
-    # combine training and validation for full training set
+    # combine train and val indices for training set
     combined_train_indices = np.concatenate([train_indices, val_indices])
 
-
-    # create training and test sets
+    # create training and test sets 
     train_set = CustomImageDataset([image_paths[i] for i in combined_train_indices],
                                    [labels[i] for i in combined_train_indices],
                                    transform=training_transformations)
@@ -219,20 +207,17 @@ def main():
                                   [labels[i] for i in test_indices],
                                   transform=validation_test_transformations)
 
-    # create dataloaders
-    train_loader = DataLoader(train_set, batch_size=32, shuffle=True, num_workers=2,
-                              persistent_workers=True, worker_init_fn=worker_init_fn)
-    test_loader = DataLoader(test_set, batch_size=32, shuffle=False, num_workers=2,
-                             persistent_workers=True, worker_init_fn=worker_init_fn)
+    # create dataloaders 
+    train_loader = DataLoader(train_set, batch_size=32, shuffle=True, num_workers=2, persistent_workers=True, worker_init_fn=worker_init_fn)
+    test_loader = DataLoader(test_set, batch_size=32, shuffle=False, num_workers=2, persistent_workers=True, worker_init_fn=worker_init_fn)
 
-    # load pretrained encoder from simclr
-    byol_ckpt_path = r"C:/Users/Xuxu/Desktop/Master Thesis/BYOLPretrainVer3/byol_encoder.pt"
-    model = ConvNextTinyLightning(len(class_to_idx), class_weights, best_hparams, byol_ckpt_path=byol_ckpt_path)
+    model = ConvNextTinyLightning(len(class_to_idx), class_weights, best_hparams)
 
     log_name = "single_run"
     log_version = "version_0"
     version_dir = os.path.join(save_dir, log_name, log_version)
     pred_dir = os.path.join(version_dir, "predictions")
+
     os.makedirs(pred_dir, exist_ok=True)
 
     logger = CSVLogger(
@@ -245,13 +230,12 @@ def main():
         max_epochs=100,
         accelerator="gpu",
         devices=1,
-        precision="16-mixed",
         logger=logger,
+        precision="16-mixed",
         enable_checkpointing=False,
         callbacks=[],
         log_every_n_steps=1
     )
-
 
     # train and test
     trainer.fit(model, train_loader)
@@ -273,8 +257,9 @@ def main():
             all_targets.extend(y.cpu().numpy())
             all_probs.extend(probs.cpu().numpy())
 
-    # save final test metrics and predictions
     metrics_to_save = {k: (v.item() if torch.is_tensor(v) else v) for k, v in trainer.callback_metrics.items()}
+
+    # save test metrics to json file
     with open(os.path.join(version_dir, "test_metrics.json"), "w") as f:
         json.dump(metrics_to_save, f, indent=2)
 
@@ -282,9 +267,10 @@ def main():
     np.save(os.path.join(version_dir, "all_preds.npy"), np.array(all_preds))
     np.save(os.path.join(version_dir, "all_targets.npy"), np.array(all_targets))
     np.save(os.path.join(version_dir, "all_probs.npy"), np.array(all_probs))
+    
     torch.save(model.state_dict(), os.path.join(version_dir, "model.pth"))
 
-    print(f"\nTraining complete. Total time: {time.time() - start_time:.2f} seconds.")
+    print(f"\ntraining complete. total time: {time.time() - start_time:.2f} seconds.")
 
 if __name__ == "__main__":
     main()

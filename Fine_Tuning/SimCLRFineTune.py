@@ -13,12 +13,12 @@ from torch.nn.functional import softmax
 
 # configuration and hyperparameters
 dataset_root = r"C:\Users\Xuxu\Desktop\CCMT Dataset"
-index_dir = r"C:\Users\Xuxu\Desktop\Master Thesis\OptunaDensenetFull"
+split_dir = r"C:\Users\Xuxu\Desktop\Master Thesis\OptunaDensenetFull"
 optuna_pkl = r"C:/Users/Xuxu/Desktop/Master Thesis/OptunaConvNeXtFull/new_convnext_study.pkl"
-save_dir = r"C:\Users\Xuxu\Desktop\Master Thesis\BYOLBaselineVer2Epoch100"
+save_dir = r"C:\Users\Xuxu\Desktop\Master Thesis\SIMCLRBaselineEpoch100"
 
 os.makedirs(save_dir, exist_ok=True)
-torch.set_float32_matmul_precision('medium')
+torch.set_float32_matmul_precision('medium')  
 
 # reproducibility setup
 def set_seed(seed=42):
@@ -43,8 +43,8 @@ training_transformations = transforms.Compose([
     transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
 ])
 
-# image transformations for validation (no augmentation)
 
+# image transformations for validation  (no augmentation)
 validation_test_transformations = transforms.Compose([
     transforms.Resize(256),
     transforms.CenterCrop(224),
@@ -70,7 +70,7 @@ class CustomImageDataset(Dataset):
 
 # model definition using convnext-tiny
 class ConvNextTinyLightning(pl.LightningModule):
-    def __init__(self, num_classes, class_weights, hparams, byol_ckpt_path=None):
+    def __init__(self, num_classes, class_weights, hparams, simclr_ckpt_path=None, freeze_encoder=True):
         super().__init__()
         self.save_hyperparameters()
         self.hparams_dict = hparams
@@ -79,18 +79,20 @@ class ConvNextTinyLightning(pl.LightningModule):
 
         self.model = models.convnext_tiny(weights=None)
 
-        # load byol pretrained weights
-        if byol_ckpt_path is not None and os.path.exists(byol_ckpt_path):
-            print(f"\n>> Loading BYOL pretrained weights from {byol_ckpt_path}")
-            state_dict = torch.load(byol_ckpt_path, map_location="cpu")
-            self.model.features.load_state_dict(state_dict, strict=False)
+        # load simclr pretrained weights
+        if simclr_ckpt_path is not None and os.path.exists(simclr_ckpt_path):
+            print(f"\n>> Loading SimCLR pretrained weights from {simclr_ckpt_path}")
+            state_dict = torch.load(simclr_ckpt_path, map_location="cpu")
+            if "features" in state_dict:
+                self.model.features.load_state_dict(state_dict["features"], strict=False)
+            else:
+                raise KeyError("SimCLR checkpoint must contain a 'features' key.")
         else:
-            raise FileNotFoundError(f"BYOL checkpoint not found at {byol_ckpt_path}")
+            raise FileNotFoundError(f"SimCLR checkpoint not found at {simclr_ckpt_path}")
 
         # unfreeze encoder for fine-tuning
         for param in self.model.features.parameters():
             param.requires_grad = True
-
 
         # build classifier head with configurable fc layers
         in_features = self.model.classifier[2].in_features
@@ -120,8 +122,8 @@ class ConvNextTinyLightning(pl.LightningModule):
 
     def setup(self, stage=None):
         device = self.device
-        self.loss_fn_train = nn.CrossEntropyLoss(weight=self.class_weights.to(device))
-        self.loss_fn_test = nn.CrossEntropyLoss()
+        self.loss_fn_train = nn.CrossEntropyLoss(weight=self.class_weights.to(device))  # weighted loss
+        self.loss_fn_test = nn.CrossEntropyLoss()  # unweighted for validation/test
 
         self.metrics = {
             "f1": F1Score(task="multiclass", num_classes=self.num_classes, average="macro").to(device),
@@ -183,15 +185,15 @@ def main():
     best_hparams["lr"] = best_hparams.pop("learning_rate")
     print("Best Hyperparameters:", best_hparams)
 
-    # load label to index mapping
-    with open(os.path.join(index_dir, "class_to_idx.json")) as f:
+    # load class to index mapping 
+    with open(os.path.join(split_dir, "class_to_idx.json")) as f:
         class_to_idx = json.load(f)
 
     # load dataset split indices
-    train_indices = np.load(os.path.join(index_dir, "train_indices.npy"))
-    val_indices = np.load(os.path.join(index_dir, "val_indices.npy"))
-    test_indices = np.load(os.path.join(index_dir, "test_indices.npy"))
-    class_weights = torch.load(os.path.join(index_dir, "class_weights.pt"))
+    train_indices = np.load(os.path.join(split_dir, "train_indices.npy"))
+    val_indices = np.load(os.path.join(split_dir, "val_indices.npy"))
+    test_indices = np.load(os.path.join(split_dir, "test_indices.npy"))
+    class_weights = torch.load(os.path.join(split_dir, "class_weights.pt"))  
 
     image_paths, labels = [], []
     for crop in sorted(os.listdir(dataset_root)):
@@ -205,10 +207,8 @@ def main():
                     labels.append(class_idx)
     labels = np.array(labels)
 
-
     # combine training and validation for full training set
     combined_train_indices = np.concatenate([train_indices, val_indices])
-
 
     # create training and test sets
     train_set = CustomImageDataset([image_paths[i] for i in combined_train_indices],
@@ -226,8 +226,8 @@ def main():
                              persistent_workers=True, worker_init_fn=worker_init_fn)
 
     # load pretrained encoder from simclr
-    byol_ckpt_path = r"C:/Users/Xuxu/Desktop/Master Thesis/BYOLPretrainVer3/byol_encoder.pt"
-    model = ConvNextTinyLightning(len(class_to_idx), class_weights, best_hparams, byol_ckpt_path=byol_ckpt_path)
+    simclr_ckpt_path = r"C:\Users\Xuxu\Desktop\Master Thesis\SimCLRPretrainVer3\simclr_encoder.pth"
+    model = ConvNextTinyLightning(len(class_to_idx), class_weights, best_hparams, simclr_ckpt_path=simclr_ckpt_path)
 
     log_name = "single_run"
     log_version = "version_0"
@@ -251,7 +251,6 @@ def main():
         callbacks=[],
         log_every_n_steps=1
     )
-
 
     # train and test
     trainer.fit(model, train_loader)
