@@ -1,6 +1,6 @@
 # byol  pretraining 
 # adapted from: https://colab.research.google.com/github/lightly-ai/lightly/blob/master/examples/notebooks/pytorch_lightning/byol.ipynb
-# modified for custom dataset, convnext_tiny backbone, and BYOL paper loss (MSE of normalized vectors)
+# modified for custom dataset, convnext_tiny backbone
 
 import os
 import time
