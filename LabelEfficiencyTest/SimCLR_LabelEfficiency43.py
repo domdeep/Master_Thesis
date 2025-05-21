@@ -15,13 +15,13 @@ from torch.nn.functional import softmax
 dataset_root = r"C:\Users\Xuxu\Desktop\CCMT Dataset"
 split_dir = r"C:\Users\Xuxu\Desktop\Master Thesis\OptunaDensenetFull"
 optuna_pkl = r"C:/Users/Xuxu/Desktop/Master Thesis/OptunaConvNeXtFull/new_convnext_study.pkl"
-save_dir = r"C:\Users\Xuxu\Desktop\Master Thesis\SimCLRBaselineLabelEfficiencySeed42"
+save_dir = r"C:\Users\Xuxu\Desktop\Master Thesis\SimCLRBaselineLabelEfficiencySeed43"
 
 os.makedirs(save_dir, exist_ok=True)
 torch.set_float32_matmul_precision('medium')  
 
 # reproducibility setup
-def set_seed(seed=42):
+def set_seed(seed=43):
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
@@ -31,7 +31,7 @@ def set_seed(seed=42):
         torch.cuda.manual_seed_all(seed)
 
 def worker_init_fn(worker_id):
-    seed = 42 + worker_id
+    seed = 43 + worker_id
     np.random.seed(seed)
     random.seed(seed)
 
@@ -175,7 +175,7 @@ class ConvNextTinyLightning(pl.LightningModule):
 
 # training and evaluation pipeline
 def main():
-    set_seed(42)
+    set_seed(43)
     start_time = time.time()
 
     # load best hyperparameters from optuna
@@ -189,8 +189,8 @@ def main():
         class_to_idx = json.load(f)
 
     # load dataset split indices
-    train_indices = np.load(os.path.join(split_dir, "train_indices.npy"))
-    val_indices = np.load(os.path.join(split_dir, "val_indices.npy"))
+    train_indices = np.load(os.path.join(split_dir, "train_indices_seed43.npy"))
+    val_indices = np.load(os.path.join(split_dir, "val_indices_seed43.npy"))
     test_indices = np.load(os.path.join(split_dir, "test_indices.npy"))
     class_weights = torch.load(os.path.join(split_dir, "class_weights.pt"))  
 
@@ -221,7 +221,7 @@ def main():
 
     for percent in label_percentages:
 
-        set_seed(42)
+        set_seed(43)
         num_samples = int(len(combined_train_indices) * (percent / 100))
         selected_indices = np.random.choice(combined_train_indices, num_samples, replace=False)
 

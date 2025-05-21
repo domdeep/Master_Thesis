@@ -15,7 +15,7 @@ from torch.nn.functional import softmax
 dataset_root = r"C:\Users\Xuxu\Desktop\CCMT Dataset"
 split_dir = r"C:\Users\Xuxu\Desktop\Master Thesis\OptunaDensenetFull"
 optuna_pkl = r"C:/Users/Xuxu/Desktop/Master Thesis/OptunaConvNeXtFull/new_convnext_study.pkl"
-save_dir = r"C:\Users\Xuxu\Desktop\Master Thesis\SimCLRBaselineLabelEfficiencySeed42"
+save_dir = r"C:\Users\Xuxu\Desktop\Master Thesis\SimCLRBaselineLabelEfficiencySeed44"
 
 os.makedirs(save_dir, exist_ok=True)
 torch.set_float32_matmul_precision('medium')  
@@ -189,8 +189,8 @@ def main():
         class_to_idx = json.load(f)
 
     # load dataset split indices
-    train_indices = np.load(os.path.join(split_dir, "train_indices.npy"))
-    val_indices = np.load(os.path.join(split_dir, "val_indices.npy"))
+    train_indices = np.load(os.path.join(split_dir, "train_indices_seed44.npy"))
+    val_indices = np.load(os.path.join(split_dir, "val_indices_seed44.npy"))
     test_indices = np.load(os.path.join(split_dir, "test_indices.npy"))
     class_weights = torch.load(os.path.join(split_dir, "class_weights.pt"))  
 
