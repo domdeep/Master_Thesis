@@ -1,7 +1,6 @@
 # byol  pretraining 
 # adapted from: https://colab.research.google.com/github/lightly-ai/lightly/blob/master/examples/notebooks/pytorch_lightning/byol.ipynb
-# modified for custom dataset, convnext_tiny backbone, and full training pipeline
-
+# modified for custom dataset, convnext_tiny backbone, and BYOL paper loss (MSE of normalized vectors)
 
 import os
 import time
@@ -13,6 +12,7 @@ from PIL import Image
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from torch.utils.data import Dataset, DataLoader
 
 import torchvision
@@ -25,10 +25,8 @@ from torchvision.transforms import (
 import pytorch_lightning as pl
 from pytorch_lightning.loggers import CSVLogger
 from pytorch_lightning.callbacks import ModelCheckpoint
-from lightly.loss import NegativeCosineSimilarity
 from lightly.models.modules import BYOLProjectionHead, BYOLPredictionHead
 from lightly.models.utils import deactivate_requires_grad, update_momentum
-from lightly.utils.scheduler import cosine_schedule
 
 # training config
 split_dir = r"C:/Users/Xuxu/Desktop/Master Thesis/OptunaDensenetFull"
@@ -40,12 +38,10 @@ max_epochs = 100
 lr = 0.0003
 weight_decay = 0.0001
 
-# create directory if not exists
 os.makedirs(save_dir, exist_ok=True)
-# enable faster matmul precision
 torch.set_float32_matmul_precision("medium")
 
-# set seed for reproducibility
+# reproducibility
 def set_seed(seed=42):
     random.seed(seed)
     np.random.seed(seed)
@@ -55,39 +51,37 @@ def set_seed(seed=42):
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(seed)
 
-# initialize each worker with unique but deterministic seed
 def worker_init_fn(worker_id):
     seed = 42 + worker_id
     np.random.seed(seed)
     random.seed(seed)
 
-# transform for left and right views with different augmentation strengths
+# BYOL-style dual view transform
 class BYOLTransformView:
     def __init__(self, input_size=224):
         self.left_transform = T.Compose([
             RandomResizedCrop(input_size, scale=(0.08, 1.0)),
             RandomHorizontalFlip(p=0.5),
-            ColorJitter(brightness=0.8, contrast=0.8, saturation=0.8, hue=0.2),
+            ColorJitter(0.8, 0.8, 0.8, 0.2),
             RandomGrayscale(p=0.2),
-            RandomApply([GaussianBlur(kernel_size=23, sigma=(0.1, 2.0))], p=0.1),
+            RandomApply([GaussianBlur(23, sigma=(0.1, 2.0))], p=0.1),
             ToTensor(),
-            Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+            Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
         ])
         self.right_transform = T.Compose([
             RandomResizedCrop(input_size, scale=(0.08, 1.0)),
             RandomHorizontalFlip(p=0.5),
-            ColorJitter(brightness=0.8, contrast=0.8, saturation=0.8, hue=0.2),
+            ColorJitter(0.8, 0.8, 0.8, 0.2),
             RandomGrayscale(p=0.2),
-            RandomApply([GaussianBlur(kernel_size=23, sigma=(0.1, 2.0))], p=0.1),
-            RandomApply([T.RandomSolarize(threshold=128)], p=0.2), # solarization only for right view
+            RandomApply([GaussianBlur(23, sigma=(0.1, 2.0))], p=0.1),
+            RandomApply([T.RandomSolarize(128)], p=0.2), # solarization only for right view
             ToTensor(),
-            Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+            Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
         ])
-        
     def __call__(self, x):
         return self.left_transform(x), self.right_transform(x)
 
-# custom dataset that loads image paths and returns 2 views for byol
+# Custom dataset returning BYOL dual views
 class CustomImageDataset(Dataset):
     def __init__(self, root_dir, indices=None):
         all_paths = []
@@ -105,7 +99,6 @@ class CustomImageDataset(Dataset):
                             all_paths.append(path)
                         except:
                             continue
-
         self.image_paths = [all_paths[i] for i in indices] if indices is not None else all_paths
         self.transform = BYOLTransformView()
 
@@ -116,7 +109,7 @@ class CustomImageDataset(Dataset):
         image = Image.open(self.image_paths[idx]).convert("RGB")
         return self.transform(image)
 
-# byol lightning module with convnext-tiny
+# BYOL LightningModule
 class BYOLConvNeXtTiny(pl.LightningModule):
     def __init__(self):
         super().__init__()
@@ -128,7 +121,7 @@ class BYOLConvNeXtTiny(pl.LightningModule):
         self.projection_head_momentum = copy.deepcopy(self.projection_head)
         deactivate_requires_grad(self.backbone_momentum)
         deactivate_requires_grad(self.projection_head_momentum)
-        self.criterion = NegativeCosineSimilarity()
+        self.criterion = nn.MSELoss()
 
     def forward(self, x):
         return self.prediction_head(self.projection_head(self.backbone(x)))
@@ -140,7 +133,7 @@ class BYOLConvNeXtTiny(pl.LightningModule):
     def training_step(self, batch, batch_idx):
         x0, x1 = batch
 
-        # update exponential moving average
+        # update EMA momentum
         base_momentum = 0.996
         max_e = self.trainer.max_epochs
         epoch = self.current_epoch
@@ -148,20 +141,25 @@ class BYOLConvNeXtTiny(pl.LightningModule):
         update_momentum(self.backbone, self.backbone_momentum, m=momentum)
         update_momentum(self.projection_head, self.projection_head_momentum, m=momentum)
 
+        # forward pass
         p0, z1 = self.forward(x0), self.forward_momentum(x1)
         p1, z0 = self.forward(x1), self.forward_momentum(x0)
 
-        loss = 0.5 * (self.criterion(p0, z1.detach()) + self.criterion(p1, z0.detach()))
+        # BYOL loss = MSE between normalized vectors
+        loss = 0.5 * (
+            self.criterion(F.normalize(p0, dim=-1), F.normalize(z1.detach(), dim=-1)) +
+            self.criterion(F.normalize(p1, dim=-1), F.normalize(z0.detach(), dim=-1))
+        )
 
         if torch.isnan(loss):
             raise ValueError(f"[nan detected] epoch {self.current_epoch} | batch {batch_idx}")
-
+        
+        self.log("train_loss", loss, on_step=True, on_epoch=True, prog_bar=True)
         return loss
 
     def configure_optimizers(self):
         optimizer = torch.optim.Adam(self.parameters(), lr=lr, weight_decay=weight_decay)
 
-        # cosine lr schedule with warmup
         def cosine_warmup_schedule(epoch):
             if epoch < 10:
                 return float(epoch + 1) / 10
@@ -172,7 +170,7 @@ class BYOLConvNeXtTiny(pl.LightningModule):
         scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=cosine_warmup_schedule)
         return [optimizer], [{"scheduler": scheduler, "interval": "epoch"}]
 
-# main training loop
+# training loop
 def main():
     set_seed(42)
     start = time.time()
@@ -204,28 +202,20 @@ def main():
         default_root_dir=save_dir
     )
 
-
     print("[info] starting training...")
+    trainer.fit(model, train_dataloaders=dataloader)
 
-    trainer.fit(
-        model,
-        train_dataloaders=dataloader,
-    )
-
-    end_time = time.time()
-    minutes, seconds = divmod(int(end_time - start), 60)
-
-    # Save encoder
+    # save encoder
     if os.path.exists(os.path.join(ckpt_dir, "last.ckpt")):
         best_model = BYOLConvNeXtTiny.load_from_checkpoint(os.path.join(ckpt_dir, "last.ckpt"))
         encoder_path = os.path.join(save_dir, "byol_encoder.pth")
         torch.save({
             "features": best_model.backbone[0].state_dict(),
         }, encoder_path)
-        print(f" Encoder saved to: {encoder_path}")
+        print(f"Encoder saved to: {encoder_path}")
         print(f"Best checkpoint: {os.path.join(ckpt_dir, 'last.ckpt')}")
+
+    print(f"[done] Total training time: {int(time.time() - start)} seconds")
 
 if __name__ == "__main__":
     main()
-
-
